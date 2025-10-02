@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import gc
-from tqdm import tqdm
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
 import matplotlib.pyplot as plt
 
@@ -20,7 +19,7 @@ def validate_model(
     total_val_loss = 0.0
 
     with torch.no_grad():
-        for data, labels in tqdm(val_loader):
+        for data, labels in val_loader:
             data = data.to(device, non_blocking=True)
             labels = labels.float().to(device, non_blocking=True)
 
@@ -81,7 +80,7 @@ def train_model(
     best_val_loss = float('inf')
     best_f1 = 0.0
 
-    for epoch in tqdm(range(epochs)):
+    for epoch in range(epochs):
         model.train()
         total_loss = 0.0
 
@@ -133,10 +132,12 @@ def train_model(
             torch.cuda.empty_cache()
         gc.collect()
 
+        print()
+
     return history
 
 def plot_training_history(history):
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(18, 10))
     
     axes[0,0].plot(history['train_loss'], label='Train')
     axes[0,0].plot(history['val_loss'], label='Val')
@@ -149,20 +150,13 @@ def plot_training_history(history):
     axes[0,1].set_title('F1 Score')
     axes[0,1].legend()
     
-    axes[0,2].plot(history['val_precision'], label='Val Precision', color='blue')
-    axes[0,2].plot(history['val_recall'], label='Val Recall', color='red')
-    axes[0,2].set_title('Precision & Recall')
-    axes[0,2].legend()
+    axes[1,0].plot(history['val_precision'], label='Val Precision', color='blue')
+    axes[1,0].plot(history['val_recall'], label='Val Recall', color='red')
+    axes[1,0].set_title('Precision & Recall')
+    axes[1,0].legend()
     
-    axes[1,0].plot(history['val_auc'], label='Val AUC', color='purple')
-    axes[1,0].set_title('ROC-AUC')
-    
-    axes[1,1].plot(history.get('lr', []), label='Learning Rate', color='orange')
-    axes[1,1].set_title('Learning Rate')
-    
-    if 'val_accuracy' in history:
-        axes[1,2].plot(history['val_accuracy'], label='Val Accuracy')
-        axes[1,2].set_title('Accuracy')
+    axes[1,1].plot(history['val_roc_auc'], label='Val AUC', color='purple')
+    axes[1,1].set_title('ROC-AUC')
     
     plt.tight_layout()
     return fig

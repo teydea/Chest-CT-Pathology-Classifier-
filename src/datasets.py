@@ -4,6 +4,7 @@ import os
 import glob
 from torchvision import transforms
 import pydicom
+from PIL import Image
 
 import torch
 from torch.utils.data import Dataset
@@ -51,11 +52,9 @@ class CTDataset(Dataset):
         if not slices:
             raise ValueError(f"No valid DICOM slices in {series_dir}")
     
-        # Сортировка по Z-координате
         sorted_pairs = sorted(zip(positions, slices), key=lambda x: x[0])
         sorted_slices = [s for _, s in sorted_pairs]
     
-        # Конвертация в numpy array
         volume = np.stack([
             s.pixel_array.astype(np.float32) * float(getattr(s, 'RescaleSlope', 1)) +
             float(getattr(s, 'RescaleIntercept', 0))
