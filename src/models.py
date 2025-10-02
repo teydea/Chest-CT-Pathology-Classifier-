@@ -96,7 +96,34 @@ class CTClassifier(nn.Module):
         emb = self.encoder(x)
         logits = self.classifier(emb).squeeze(-1)
         return logits
-        
+
+class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):
+    def forward(self, src, src_mask=None, src_key_padding_mask=None, return_attn=False):
+        x = src
+        if self.norm_first:
+            sa_out, attn = self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, return_attn)
+            x = x + sa_out
+            x = x + self._ff_block(self.norm2(x))
+        else:
+            sa_out, attn = self._sa_block(x, src_mask, src_key_padding_mask, return_attn)
+            x = self.norm1(x + sa_out)
+            x = self.norm2(x + self._ff_block(x))
+        return (x, attn) if return_attn else x
+
+    def _sa_block(self, x, attn_mask, key_padding_mask, return_attn=False):
+        x, attn = self.self_attn(
+            x, x, x,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=return_attn,
+            average_attn_weights=False
+        )
+        return self.dropout1(x), attn
+
+    def _ff_block(self, x):
+        return self.dropout2(self.linear2(self.activation(self.linear1(x))))
+
+
 class SliceFormer3D(nn.Module):
     def __init__(
         self,
@@ -110,7 +137,6 @@ class SliceFormer3D(nn.Module):
         super().__init__()
         self.slice_encoder = slice_encoder
 
-        
         self.local_context = nn.Sequential(
             nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
             nn.GroupNorm(8, embed_dim),
@@ -121,16 +147,18 @@ class SliceFormer3D(nn.Module):
         
         self.pos_embed = nn.Parameter(torch.randn(1, max_slices + 1, embed_dim))
         
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=num_heads,
-            dim_feedforward=embed_dim * 4,
-            dropout=dropout,
-            activation='gelu',
-            batch_first=True,
-            norm_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_transformer_layers)
+        self.transformer_layers = nn.ModuleList([
+            TransformerEncoderLayerWithAttn(
+                d_model=embed_dim,
+                nhead=num_heads,
+                dim_feedforward=embed_dim * 4,
+                dropout=dropout,
+                activation='gelu',
+                batch_first=True,
+                norm_first=True
+            )
+            for _ in range(num_transformer_layers)
+        ])
         
         self.classifier = nn.Sequential(
             nn.LayerNorm(embed_dim),
@@ -138,27 +166,26 @@ class SliceFormer3D(nn.Module):
             nn.Linear(embed_dim, 1)
         )
 
-    def forward(self, x):
+    def forward(self, x, return_attentions=False):
         B, N, C, H, W = x.shape
         
         x_flat = x.view(B * N, C, H, W)
-        slice_embeds = self.slice_encoder(x_flat)
-        slice_embeds = slice_embeds.view(B, N, -1)
+        slice_embeds = self.slice_encoder(x_flat).view(B, N, -1)
         
-        slice_embeds = slice_embeds.permute(0, 2, 1)
-        slice_embeds = self.local_context(slice_embeds)
-        slice_embeds = slice_embeds.permute(0, 2, 1)
+        slice_embeds = self.local_context(slice_embeds.permute(0, 2, 1)).permute(0, 2, 1)
         
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat([cls_tokens, slice_embeds], dim=1)
-
-        if N + 1 > self.pos_embed.shape[1]:
-            raise ValueError(f"Слишком много срезов! Максимум: {self.pos_embed.shape[1] - 1}")
-        x = x + self.pos_embed[:, :N+1, :]
+        x = x + self.pos_embed[:, :N + 1]
         
-        x = self.transformer(x)
+        attentions = []
+        for layer in self.transformer_layers:
+            if return_attentions:
+                x, attn = layer(x, return_attn=True)
+                attentions.append(attn)
+            else:
+                x = layer(x)
         
-        cls_output = x[:, 0]
-        logits = self.classifier(cls_output).squeeze(-1)
+        logits = self.classifier(x[:, 0]).squeeze(-1)
         
-        return logits
+        return (logits, attentions) if return_attentions else logits

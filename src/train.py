@@ -6,6 +6,7 @@ from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_sco
 import matplotlib.pyplot as plt
 
 
+
 def validate_model(
     model, 
     val_loader, 
@@ -55,18 +56,24 @@ def train_model(
     lr=1e-3,
     wd=5e-4,
     patience=2,
-    save_path='best_slice_clf_model.pth'
+    save_path='best_slice_clf_model.pth',
+    optimizer=None,
+    scheduler=None
 ):
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',
-        factor=0.5,
-        patience=patience,
-        verbose=True,
-        min_lr=1e-6
-    )
+    
+    if optimizer is None:
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    
+    if scheduler is None:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=patience,
+            verbose=True,
+            min_lr=1e-6
+        )
 
     history = {
         'train_loss' : [],
@@ -135,6 +142,84 @@ def train_model(
         print()
 
     return history
+
+def setup_fine_tuning_complete(model, backbone_unfreeze_layers=3):
+    backbone = model.slice_encoder.backbone.features
+    
+    for param in model.slice_encoder.backbone.parameters():
+        param.requires_grad = False
+    
+    total_layers = len(backbone)
+    layers_to_unfreeze = min(backbone_unfreeze_layers, total_layers)
+    
+    for i in range(total_layers - layers_to_unfreeze, total_layers):
+        for param in backbone[i].parameters():
+            param.requires_grad = True
+    
+    for param in model.slice_encoder.heads.parameters():
+        param.requires_grad = True
+        
+    for param in model.slice_encoder.agg.parameters():
+        param.requires_grad = True  
+    
+    for name, param in model.named_parameters():
+        if 'transformer' in name or 'classifier' in name:
+            param.requires_grad = True
+
+def create_complete_optimizer(model):
+    param_groups = []
+    
+    backbone_params = [p for p in model.slice_encoder.backbone.parameters() if p.requires_grad]
+    if backbone_params:
+        param_groups.append({
+            'params': backbone_params,
+            'lr': 1e-6,
+            'name': 'backbone_fine_tune'
+        })
+    
+    heads_params = list(model.slice_encoder.heads.parameters())
+    if heads_params:
+        param_groups.append({
+            'params': heads_params,
+            'lr': 1e-5, 
+            'name': 'heads'
+        })
+    
+    agg_params = list(model.slice_encoder.agg.parameters())
+    if agg_params:
+        param_groups.append({
+            'params': agg_params,
+            'lr': 1e-6,
+            'name': 'aggregation'
+        })
+    
+    transformer_params = list(model.transformer_layers.parameters())
+    if transformer_params:
+        param_groups.append({
+            'params': transformer_params,
+            'lr': 1e-4,
+            'name': 'transformer'
+        })
+    
+    classifier_params = list(model.classifier.parameters())
+    if classifier_params:
+        param_groups.append({
+            'params': classifier_params,
+            'lr': 1e-4,
+            'name': 'classifier'
+        })
+    
+    return torch.optim.AdamW(param_groups, weight_decay=1e-6)
+
+def debug_parameter_groups(optimizer):
+    for i, group in enumerate(optimizer.param_groups):
+        num_params = sum(p.numel() for p in group['params'])
+        print(f"Группа {i} ({group.get('name', 'no-name')}):")
+        print(f"  LR: {group['lr']}")
+        print(f"  Параметров: {num_params:,}")
+        print(f"  Примеры параметров:")
+        for j, param in enumerate(group['params'][:2]):  # Покажем первые 2
+            print(f"    - {param.shape} (requires_grad: {param.requires_grad})")
 
 def plot_training_history(history):
     fig, axes = plt.subplots(2, 2, figsize=(18, 10))
